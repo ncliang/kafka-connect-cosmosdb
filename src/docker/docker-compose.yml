@@ -104,6 +104,7 @@ services:
     container_name: connect
     ports:
       - "8083:8083"
+      - "9890:9890"
     environment:
       CONNECT_BOOTSTRAP_SERVERS: "broker:29092"
       CONNECT_REST_ADVERTISED_HOST_NAME: "connect"
@@ -129,6 +130,8 @@ services:
       CONNECT_LOG4J_ROOT_LOGLEVEL: "WARN"
       CONNECT_LOG4J_LOGGERS: "org.apache.kafka=INFO,org.reflections=ERROR,com.azure.cosmos.kafka=DEBUG"
       CONNECT_PLUGIN_PATH: '/usr/share/java,/usr/share/confluent-hub-components,/etc/kafka-connect/jars'
+      KAFKA_JMX_PORT: 9890
+      KAFKA_JMX_HOSTNAME: localhost
     depends_on:
       - zookeeper
       - broker

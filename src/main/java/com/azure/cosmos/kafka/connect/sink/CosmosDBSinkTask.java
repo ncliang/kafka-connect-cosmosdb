@@ -9,12 +9,26 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.util.Collection;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.ArrayList;
 import java.util.Map;
 import java.util.stream.Collectors;
 
 import org.apache.commons.collections4.CollectionUtils;
+import org.apache.commons.lang3.RandomUtils;
 import org.apache.kafka.connect.data.Struct;
+import org.apache.kafka.common.MetricName;
+import org.apache.kafka.common.metrics.Metrics;
+import org.apache.kafka.common.metrics.MetricsReporter;
+import org.apache.kafka.common.metrics.MetricConfig;
+import org.apache.kafka.common.metrics.MetricsContext;
+import org.apache.kafka.common.metrics.KafkaMetricsContext;
+import org.apache.kafka.common.metrics.JmxReporter;
+import org.apache.kafka.common.metrics.Sensor;
+import org.apache.kafka.common.metrics.stats.Rate;
+import org.apache.kafka.common.metrics.stats.CumulativeSum;
+import org.apache.kafka.common.utils.Time;
 import org.apache.kafka.connect.sink.SinkRecord;
 import org.apache.kafka.connect.sink.SinkTask;
 import org.slf4j.Logger;
@@ -28,6 +42,11 @@ public class CosmosDBSinkTask extends SinkTask {
     private CosmosClient client = null;
     private CosmosDBSinkConfig config;
     ObjectMapper mapper = new ObjectMapper();
+
+    // Gather custom Cosmos metrics
+    private Metrics cosmosMetrics;
+    private Sensor cosmosRecordsSentSensor;
+    private long cosmosMessagesSent = 0;
 
     @Override
     public String version() {
@@ -45,6 +64,9 @@ public class CosmosDBSinkTask extends SinkTask {
                 .userAgentSuffix(CosmosDBConfig.COSMOS_CLIENT_USER_AGENT_SUFFIX + version()).buildClient();
 
         client.createDatabaseIfNotExists(config.getDatabaseName());
+        
+        // Set up cosmos metrics
+        setupCosmosMetrics();
     }
 
     @Override
@@ -82,11 +104,15 @@ public class CosmosDBSinkTask extends SinkTask {
 
                 try {
                     addItemToContainer(container, recordValue);
+                    cosmosMessagesSent++;
                 } catch (BadRequestException bre) {
                     throw new CosmosDBWriteException(record, bre);
                 }
             }
         }
+
+        cosmosRecordsSentSensor.record(cosmosMessagesSent);
+        cosmosMessagesSent = 0;
     }
 
     private void addItemToContainer(CosmosContainer container, Object recordValue) {
@@ -95,6 +121,29 @@ public class CosmosDBSinkTask extends SinkTask {
         } else {
             container.createItem(recordValue);
         }
+    }
+
+    private void setupCosmosMetrics() {
+        logger.info("Setting up Sink Task custom metric handler.");
+
+        JmxReporter jmxReporter = new JmxReporter();
+        List<MetricsReporter> reporters = new ArrayList<>();
+        reporters.add(jmxReporter);
+
+        Map<String, String> metricTags = new LinkedHashMap<>();
+        metricTags.put("connector", "cosmos-connector");
+        metricTags.put("task", "sink-task-" + RandomUtils.nextLong(1L, 9999999L));
+       
+        MetricConfig metricConfig = new MetricConfig().tags(metricTags);
+        MetricsContext metricsContext = new KafkaMetricsContext("cosmos.kafka.connect", new LinkedHashMap<>());
+        cosmosMetrics = new Metrics(metricConfig, reporters, Time.SYSTEM, metricsContext);
+        cosmosRecordsSentSensor = cosmosMetrics.sensor("cosmos-records-sent");
+        MetricName recordsSentRate = cosmosMetrics.metricName("cosmos-records-sent-rate", 
+            "cosmos-task-metrics", "Cosmos records sent rate");
+        MetricName recordsSentTotal = cosmosMetrics.metricName("cosmos-records-sent-total",
+            "cosmos-task-metrics", "Cosmos records sent total");
+        cosmosRecordsSentSensor.add(recordsSentRate, new Rate());
+        cosmosRecordsSentSensor.add(recordsSentTotal, new CumulativeSum());
     }
 
     @Override
@@ -107,6 +156,6 @@ public class CosmosDBSinkTask extends SinkTask {
         }
 
         client = null;
-
+        cosmosMetrics.close();
     }
 }
